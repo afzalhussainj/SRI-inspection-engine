@@ -105,7 +105,7 @@ function Home() {
 export function App() {
   return (
     <>
-      <a className="skipLink" href="#main-content">
+      <a className="skip-link" href="#main-content">
         Skip to main content
       </a>
       <div id="main-content" tabIndex={-1}>

@@ -524,6 +524,33 @@ export function FormPage() {
         </div>
       </header>
 
+      {data ? (
+        <details className="referenceDetails referenceDetailsBelowHeader">
+          <summary className="referenceSummary">{t(locale, "referenceDetails")}</summary>
+          <p className="muted small referenceDetailsHint">{t(locale, "referenceDetailsHint")}</p>
+          <div className="referencePanel" role="group" aria-label={t(locale, "referenceDetails")}>
+            <div className="referenceRow">
+              <span className="referenceLabel">{t(locale, "referenceInspection")}</span>
+              <code className="referenceValue" title={inspectionId}>
+                {formatReferenceId(inspectionId)}
+              </code>
+            </div>
+            <div className="referenceRow">
+              <span className="referenceLabel">{t(locale, "referenceLink")}</span>
+              <code className="referenceValue" title={uuid}>
+                {formatReferenceId(uuid)}
+              </code>
+            </div>
+            <div className="referenceRow">
+              <span className="referenceLabel">{t(locale, "referenceFormVersion")}</span>
+              <code className="referenceValue mono" title={data.config_version_id}>
+                {formatReferenceId(data.config_version_id)}
+              </code>
+            </div>
+          </div>
+        </details>
+      ) : null}
+
       {showLoadSpinner ? (
         <section className="card cardLoading" aria-labelledby="loading-heading">
           <h2 id="loading-heading" className="visuallyHidden">
@@ -691,33 +718,6 @@ export function FormPage() {
             </Button>
           </div>
         </form>
-      ) : null}
-
-      {data ? (
-        <details className="referenceDetails">
-          <summary className="referenceSummary">{t(locale, "referenceDetails")}</summary>
-          <p className="muted small referenceDetailsHint">{t(locale, "referenceDetailsHint")}</p>
-          <div className="referencePanel" role="group" aria-label={t(locale, "referenceDetails")}>
-            <div className="referenceRow">
-              <span className="referenceLabel">{t(locale, "referenceInspection")}</span>
-              <code className="referenceValue" title={inspectionId}>
-                {formatReferenceId(inspectionId)}
-              </code>
-            </div>
-            <div className="referenceRow">
-              <span className="referenceLabel">{t(locale, "referenceLink")}</span>
-              <code className="referenceValue" title={uuid}>
-                {formatReferenceId(uuid)}
-              </code>
-            </div>
-            <div className="referenceRow">
-              <span className="referenceLabel">{t(locale, "referenceFormVersion")}</span>
-              <code className="referenceValue mono" title={data.config_version_id}>
-                {formatReferenceId(data.config_version_id)}
-              </code>
-            </div>
-          </div>
-        </details>
       ) : null}
 
       {branding.footer_text ? <div className="muted small brandFooter">{branding.footer_text}</div> : null}
