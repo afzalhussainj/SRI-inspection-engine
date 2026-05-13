@@ -104,9 +104,16 @@ function Home() {
 
 export function App() {
   return (
-    <Routes>
-      <Route path="/" element={<Home />} />
-      <Route path="/:inspectionId/:uuid" element={<FormPage />} />
-    </Routes>
+    <>
+      <a className="skipLink" href="#main-content">
+        Skip to main content
+      </a>
+      <div id="main-content" tabIndex={-1}>
+        <Routes>
+          <Route path="/" element={<Home />} />
+          <Route path="/:inspectionId/:uuid" element={<FormPage />} />
+        </Routes>
+      </div>
+    </>
   );
 }

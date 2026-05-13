@@ -7,6 +7,8 @@ export type FieldSchema = {
   help_text?: string;
   required: boolean;
   options?: Array<{ value: string; label: string }>;
+  /** When present, initialize answers only if the value is valid for the field type and select options. */
+  default?: string | number | null;
 };
 
 export type SectionSchema = {

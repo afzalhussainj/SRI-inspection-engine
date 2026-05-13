@@ -1,7 +1,17 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useParams } from "react-router-dom";
-import { fetchSubmissionPdf, getForm, resolveMediaUrl, submitForm } from "./api";
+import { ApiHttpError, fetchSubmissionPdf, getForm, isApiHttpError, resolveMediaUrl, submitForm } from "./api";
+import { Alert } from "./components/Alert";
+import { Button } from "./components/Button";
+import { FieldError } from "./components/FieldError";
+import { LoadingState } from "./components/LoadingState";
+import { NumberInput } from "./components/NumberInput";
+import { SelectField } from "./components/SelectField";
+import { TextInput } from "./components/TextInput";
 import { DEFAULT_BRANDING } from "./brandingDefaults";
+import { scrubAnswersForSubmit, validateAnswersForSubmit } from "./form/clientValidate";
+import { buildInitialAnswers } from "./form/initialAnswers";
+import { mapServerValidationToFieldErrors } from "./form/mapServerValidationToFieldErrors";
 import type { FieldSchema, GetFormResponse } from "./types";
 
 const LANGUAGE_DISPLAY: Record<string, string> = {
@@ -25,10 +35,8 @@ function formatReferenceId(id: string | undefined): string {
 
 const UI_TEXT: Record<string, Record<string, string>> = {
   en: {
-    error: "Error",
-    success: "Success",
     inspectionForm: "Inspection questionnaire",
-    loading: "Loading…",
+    loading: "Loading questionnaire…",
     formLanguage: "Form language",
     outputLanguage: "Output language",
     formLanguageHint: "Updates the questionnaire text shown below (questions and section titles).",
@@ -43,9 +51,8 @@ const UI_TEXT: Record<string, Record<string, string>> = {
       "This questionnaire does not assess safety compliance, medical risk, or probability of harm.",
     submit: "Submit",
     submitting: "Submitting…",
-    submittedToast: "Submitted successfully.",
-    loadFailed: "Failed to load form",
-    submitFailed: "Failed to submit",
+    loadFailed: "Could not load questionnaire",
+    submitFailed: "Could not submit responses",
     downloadPdf: "Download PDF summary",
     downloadingPdf: "Preparing PDF…",
     downloadPdfFailed: "Could not download the PDF.",
@@ -63,30 +70,55 @@ const UI_TEXT: Record<string, Record<string, string>> = {
       "Your institution will use this information according to its own processes. If you were offered a summary document, you may download it below when available.",
     pdfNotAvailableNote:
       "Summaries for this program are provided through your care team or program portal. If you need a copy, please contact your coordinator.",
-    submittedThanks: "Thank you for completing this structured review."
+    submittedThanks: "Thank you for completing this structured review.",
+    selectPlaceholder: "Select an option",
+    selectPlaceholderOptional: "Optional — select an option",
+    validationSummaryTitle: "Please review the items below before continuing.",
+    networkTitle: "Connection problem",
+    networkError: "We couldn’t reach the server. Check your internet connection and try again.",
+    serverErrorTitle: "Something went wrong",
+    serverError: "Please wait a moment and try again. If the problem continues, contact your coordinator.",
+    genericLoadError: "The questionnaire could not be loaded.",
+    expiredTitle: "This link has expired",
+    expiredBody: "If you still need to respond, contact your coordinator for a new invitation.",
+    notFoundTitle: "We couldn’t open this link",
+    notFoundBody: "Check that the address matches your invitation, or ask your coordinator to resend the link.",
+    unavailableTitle: "This questionnaire isn’t available",
+    unavailableBody: "It may not be published yet. Please try again later or contact your program administrator.",
+    invalidLinkTitle: "This address doesn’t look valid",
+    invalidLinkBody: "The link may be incomplete. Compare it with the invitation you received.",
+    retryLoad: "Try again",
+    closeToast: "Dismiss notification",
+    submitErrorTitle: "We couldn’t save your responses",
+    errorSelectRequired: "Please select an option to continue.",
+    errorTextRequired: "Please complete this field.",
+    errorNumberRequired: "Please enter a number.",
+    errorNumberInvalid: "Enter a valid number.",
+    errorBackendText: "Please check this text field.",
+    errorBackendString: "Please check this field.",
+    errorBackendOption: "Please choose one of the listed options.",
+    errorBackendUnsupported: "This field could not be validated. Please review your answer.",
+    errorBackendGeneral: "Please review your answers and try again."
   },
   es: {
-    error: "Error",
-    success: "Éxito",
     inspectionForm: "Cuestionario de inspección",
-    loading: "Cargando…",
+    loading: "Cargando cuestionario…",
     formLanguage: "Idioma del formulario",
     outputLanguage: "Idioma de salida",
-    formLanguageHint: "Actualiza el texto del cuestionario que se muestra a continuacion (preguntas y titulos de seccion).",
+    formLanguageHint: "Actualiza el texto del cuestionario que se muestra a continuación (preguntas y títulos de sección).",
     outputLanguageHint: "Define el idioma de su Resumen de Riesgo de Bienestar Estructurado.",
     questionnaireIntroLine1:
-      "Este cuestionario estructurado revisa como se organizan las rutinas de cuidado del hogar y los procesos de decision durante periodos tempranos de transicion.",
+      "Este cuestionario estructurado revisa cómo se organizan las rutinas de cuidado del hogar y los procesos de decisión durante periodos tempranos de transición.",
     questionnaireIntroLine2:
-      "Se enfoca en estructura, claridad y coordinacion, no en calidad de crianza ni en condiciones medicas.",
+      "Se enfoca en estructura, claridad y coordinación, no en calidad de crianza ni en condiciones médicas.",
     questionnaireIntroLine3:
-      "Las respuestas son confidenciales y anonimas, salvo que su institucion configure lo contrario.",
+      "Las respuestas son confidenciales y anónimas, salvo que su institución configure lo contrario.",
     questionnaireIntroLine4:
-      "Este cuestionario no evalua cumplimiento de seguridad, riesgo medico ni probabilidad de dano.",
+      "Este cuestionario no evalúa cumplimiento de seguridad, riesgo médico ni probabilidad de daño.",
     submit: "Enviar",
     submitting: "Enviando…",
-    submittedToast: "Enviado correctamente.",
-    loadFailed: "Error al cargar el formulario",
-    submitFailed: "Error al enviar",
+    loadFailed: "No se pudo cargar el cuestionario",
+    submitFailed: "No se pudieron enviar las respuestas",
     downloadPdf: "Descargar resumen en PDF",
     downloadingPdf: "Preparando PDF…",
     downloadPdfFailed: "No se pudo descargar el PDF.",
@@ -103,13 +135,67 @@ const UI_TEXT: Record<string, Record<string, string>> = {
     justRecordedFollowUp:
       "Su institución utilizará esta información según sus propios procesos. Si se le ofreció un documento de resumen, podrá descargarlo a continuación cuando esté disponible.",
     pdfNotAvailableNote:
-      "Los resumenes de este programa se proporcionan a través de su equipo de atención o el portal del programa. Si necesita una copia, comuníquese con su coordinador.",
-    submittedThanks: "Gracias por completar esta revision estructurada."
+      "Los resúmenes de este programa se proporcionan a través de su equipo de atención o el portal del programa. Si necesita una copia, comuníquese con su coordinador.",
+    submittedThanks: "Gracias por completar esta revisión estructurada.",
+    selectPlaceholder: "Seleccione una opción",
+    selectPlaceholderOptional: "Opcional — seleccione una opción",
+    validationSummaryTitle: "Revise los siguientes puntos antes de continuar.",
+    networkTitle: "Problema de conexión",
+    networkError: "No pudimos conectar con el servidor. Compruebe su conexión e inténtelo de nuevo.",
+    serverErrorTitle: "Algo salió mal",
+    serverError: "Espere un momento e inténtelo de nuevo. Si el problema continúa, comuníquese con su coordinador.",
+    genericLoadError: "No se pudo cargar el cuestionario.",
+    expiredTitle: "Este enlace ha vencido",
+    expiredBody: "Si aún necesita responder, solicite a su coordinador una nueva invitación.",
+    notFoundTitle: "No pudimos abrir este enlace",
+    notFoundBody: "Compruebe que la dirección coincida con su invitación o pida a su coordinador que reenvíe el enlace.",
+    unavailableTitle: "Este cuestionario no está disponible",
+    unavailableBody: "Es posible que aún no esté publicado. Inténtelo más tarde o contacte al administrador del programa.",
+    invalidLinkTitle: "Esta dirección no parece válida",
+    invalidLinkBody: "El enlace puede estar incompleto. Compárelo con la invitación que recibió.",
+    retryLoad: "Intentar de nuevo",
+    closeToast: "Cerrar notificación",
+    submitErrorTitle: "No pudimos guardar sus respuestas",
+    errorSelectRequired: "Seleccione una opción para continuar.",
+    errorTextRequired: "Complete este campo.",
+    errorNumberRequired: "Introduzca un número.",
+    errorNumberInvalid: "Introduzca un número válido.",
+    errorBackendText: "Revise este campo de texto.",
+    errorBackendString: "Revise este campo.",
+    errorBackendOption: "Elija una de las opciones listadas.",
+    errorBackendUnsupported: "No se pudo validar este campo. Revise su respuesta.",
+    errorBackendGeneral: "Revise sus respuestas e inténtelo de nuevo."
   }
 };
 
 function t(lang: string, key: string): string {
   return UI_TEXT[lang]?.[key] ?? UI_TEXT.en[key] ?? key;
+}
+
+function describeGetFormFailure(err: unknown, lang: string): { title: string; body: string } {
+  if (err instanceof TypeError && err.message === "NETWORK") {
+    return { title: t(lang, "networkTitle"), body: t(lang, "networkError") };
+  }
+  if (isApiHttpError(err)) {
+    if (err.status === 410) return { title: t(lang, "expiredTitle"), body: t(lang, "expiredBody") };
+    if (err.status === 404) return { title: t(lang, "notFoundTitle"), body: t(lang, "notFoundBody") };
+    if (err.status === 409) return { title: t(lang, "unavailableTitle"), body: t(lang, "unavailableBody") };
+    if (err.status === 400) return { title: t(lang, "invalidLinkTitle"), body: t(lang, "invalidLinkBody") };
+    return { title: t(lang, "serverErrorTitle"), body: t(lang, "serverError") };
+  }
+  return { title: t(lang, "loadFailed"), body: t(lang, "genericLoadError") };
+}
+
+function describeSubmitFailure(err: unknown, lang: string): string {
+  if (err instanceof TypeError && err.message === "NETWORK") {
+    return t(lang, "networkError");
+  }
+  if (isApiHttpError(err)) {
+    if (err.status >= 500) return t(lang, "serverError");
+    if (err.status === 409) return t(lang, "priorLinkCompletedBody");
+    return t(lang, "submitFailed");
+  }
+  return t(lang, "submitFailed");
 }
 
 function Toast({
@@ -124,99 +210,109 @@ function Toast({
   locale: string;
 }) {
   useEffect(() => {
-    const timer = window.setTimeout(onClose, 4500);
+    const timer = window.setTimeout(onClose, 5200);
     return () => window.clearTimeout(timer);
   }, [onClose]);
 
   return (
-    <div className={`toast ${kind}`}>
-      <div className="toastTitle">{kind === "error" ? t(locale, "error") : t(locale, "success")}</div>
+    <div className={`toast ${kind}`} role="status">
+      <div className="toastTitle">{kind === "error" ? t(locale, "submitFailed") : t(locale, "downloadPdf")}</div>
       <div className="toastMsg">{message}</div>
-      <button className="toastX" onClick={onClose} aria-label="Close">
+      <button type="button" className="toastX" onClick={onClose} aria-label={t(locale, "closeToast")}>
         ×
       </button>
     </div>
   );
 }
 
-function Field({
+function scrollToFirstFieldError(fieldIds: string[]) {
+  const first = fieldIds.find(Boolean);
+  if (!first) return;
+  const el = document.getElementById(`field_${first}`) as HTMLElement | null;
+  if (el && typeof el.scrollIntoView === "function") {
+    el.scrollIntoView({ behavior: "smooth", block: "center" });
+  }
+  window.setTimeout(() => {
+    if (el && typeof el.focus === "function") {
+      el.focus();
+    }
+  }, 350);
+}
+
+function SchemaField({
   field,
   value,
-  onChange
+  onChange,
+  error,
+  disabled,
+  locale
 }: {
   field: FieldSchema;
   value: unknown;
   onChange: (next: unknown) => void;
+  error?: string;
+  disabled: boolean;
+  locale: string;
 }) {
-  const id = `field_${field.id}`;
-  const common = {
-    id,
-    name: field.id
-  };
+  const errId = `err_${field.id}`;
 
   if (field.type === "number") {
     return (
-      <div className="field">
-        <label htmlFor={id}>
-          {field.label} {field.required ? <span className="req">*</span> : null}
-        </label>
-        {field.help_text ? <div className="muted small">{field.help_text}</div> : null}
-        <input
-          {...common}
-          className="textControl"
-          type="number"
-          value={value === "" ? "" : typeof value === "number" ? value : ""}
-          onChange={(e) => {
-            const v = e.target.value;
-            onChange(v === "" ? "" : Number(v));
-          }}
-          required={field.required}
-        />
-      </div>
+      <NumberInput
+        id={`field_${field.id}`}
+        label={field.label}
+        required={field.required}
+        helpText={field.help_text}
+        errorId={errId}
+        error={error}
+        disabled={disabled}
+        value={value === "" || value === undefined || value === null ? "" : String(value)}
+        onChange={(e) => {
+          const v = e.target.value;
+          onChange(v === "" ? "" : Number(v));
+        }}
+      />
     );
   }
 
   if (field.type === "select") {
     const opts = Array.isArray(field.options) ? field.options : [];
+    const strVal = typeof value === "string" ? value : "";
     return (
-      <div className="field">
-        <label htmlFor={id}>
-          {field.label} {field.required ? <span className="req">*</span> : null}
-        </label>
-        {field.help_text ? <div className="muted small">{field.help_text}</div> : null}
-        <select
-          {...common}
-          className="selectControl"
-          value={typeof value === "string" ? value : ""}
-          onChange={(e) => onChange(e.target.value)}
-          required={field.required}
-        >
-          {field.required ? null : <option value="">—</option>}
-          {opts.map((o) => (
-            <option key={o.value} value={o.value}>
-              {o.label}
-            </option>
-          ))}
-        </select>
-      </div>
+      <SelectField
+        id={`field_${field.id}`}
+        label={field.label}
+        required={field.required}
+        helpText={field.help_text}
+        errorId={errId}
+        error={error}
+        placeholder={field.required ? t(locale, "selectPlaceholder") : t(locale, "selectPlaceholderOptional")}
+        disabled={disabled}
+        value={strVal}
+        onChange={(e) => onChange(e.target.value)}
+      >
+        {opts.map((o) => (
+          <option key={o.value} value={o.value}>
+            {o.label}
+          </option>
+        ))}
+      </SelectField>
     );
   }
 
   return (
-    <div className="field">
-      <label htmlFor={id}>
-        {field.label} {field.required ? <span className="req">*</span> : null}
-      </label>
-      {field.help_text ? <div className="muted small">{field.help_text}</div> : null}
-      <input
-        {...common}
-        className="textControl"
-        type="text"
-        value={typeof value === "string" ? value : ""}
-        onChange={(e) => onChange(e.target.value)}
-        required={field.required}
-      />
-    </div>
+    <TextInput
+      id={`field_${field.id}`}
+      label={field.label}
+      required={field.required}
+      helpText={field.help_text}
+      errorId={errId}
+      error={error}
+      disabled={disabled}
+      type="text"
+      value={typeof value === "string" ? value : ""}
+      onChange={(e) => onChange(e.target.value)}
+    />
   );
 }
 
@@ -225,6 +321,7 @@ export function FormPage() {
   const [loading, setLoading] = useState(true);
   const [toast, setToast] = useState<{ kind: "error" | "success"; message: string } | null>(null);
   const [data, setData] = useState<GetFormResponse | null>(null);
+  const [loadFailure, setLoadFailure] = useState<{ title: string; body: string } | null>(null);
   const [answers, setAnswers] = useState<Record<string, unknown>>({});
   const [outputLanguage, setOutputLanguage] = useState<string | null>(null);
   const [formLanguage, setFormLanguage] = useState<string>("en");
@@ -232,7 +329,9 @@ export function FormPage() {
   const [submitting, setSubmitting] = useState(false);
   const [pdfDownloading, setPdfDownloading] = useState(false);
   const [logoBroken, setLogoBroken] = useState(false);
-  const linkSyncKeyRef = useRef<string>("");
+  const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
+  const [formLevelMessages, setFormLevelMessages] = useState<string[]>([]);
+  const linkKeyRef = useRef<string>("");
 
   const ids = useMemo(() => {
     if (!inspectionId || !uuid) return null;
@@ -244,8 +343,8 @@ export function FormPage() {
   const brandColor = branding.primary_color || "#1F2937";
   const logoSrc = resolveMediaUrl(branding.logo_url);
   const languageCodes = data?.output_languages?.length ? data.output_languages : [];
-  const outputSelectValue =
-    outputLanguage ?? data?.default_output_language ?? languageCodes[0] ?? "";
+  const effectiveOutputLang =
+    outputLanguage ?? data?.default_output_language ?? (languageCodes[0] ? languageCodes[0] : null) ?? "";
   const completionKnown = submitted || (data?.already_submitted ?? false);
   const orgPresent = Boolean((branding.organization_id ?? "").trim());
   const pdfAvailable = completionKnown && ids != null && !orgPresent;
@@ -261,52 +360,113 @@ export function FormPage() {
     setSubmitted(false);
   }, [ids?.inspectionId, ids?.uuid]);
 
-  useEffect(() => {
-    let cancelled = false;
-    async function run() {
-      if (!ids) return;
-      setLoading(true);
-      setToast(null);
-      try {
-        const res = await getForm(ids.inspectionId, ids.uuid, formLanguage);
-        if (cancelled) return;
-        setData(res);
-        const effectiveFormLang = res.selected_content_language ?? formLanguage ?? res.default_output_language ?? "en";
-        setFormLanguage(effectiveFormLang);
+  const loadForm = useCallback(async () => {
+    if (!ids) return;
+    setLoading(true);
+    setLoadFailure(null);
+    setToast(null);
+    try {
+      const res = await getForm(ids.inspectionId, ids.uuid, formLanguage);
+      setData(res);
+      const effectiveFormLang = res.selected_content_language ?? formLanguage ?? res.default_output_language ?? "en";
+      setFormLanguage(effectiveFormLang);
 
-        const lk = `${ids.inspectionId}:${ids.uuid}`;
-        if (linkSyncKeyRef.current !== lk) {
-          linkSyncKeyRef.current = lk;
-          setOutputLanguage(res.default_output_language ?? (res.output_languages?.[0] ?? null));
-        }
-      } catch (e: unknown) {
-        if (cancelled) return;
-        setData(null);
-        const msg = e instanceof Error ? e.message : t(locale, "loadFailed");
-        setToast({ kind: "error", message: msg });
-      } finally {
-        if (cancelled) return;
-        setLoading(false);
+      const lk = `${ids.inspectionId}:${ids.uuid}`;
+      if (linkKeyRef.current !== lk) {
+        linkKeyRef.current = lk;
+        setOutputLanguage(res.default_output_language ?? (res.output_languages?.[0] ?? null));
+        setAnswers(buildInitialAnswers(res.schema));
       }
+      setFieldErrors({});
+      setFormLevelMessages([]);
+    } catch (e: unknown) {
+      setData(null);
+      setLoadFailure(describeGetFormFailure(e, formLanguage || "en"));
+    } finally {
+      setLoading(false);
     }
-    run();
-    return () => {
-      cancelled = true;
-    };
   }, [ids, formLanguage]);
+
+  useEffect(() => {
+    if (!ids) {
+      setLoading(false);
+      return;
+    }
+    void loadForm();
+  }, [ids, loadForm]);
+
+  function clearFieldError(fieldId: string) {
+    setFieldErrors((prev) => {
+      if (!prev[fieldId]) return prev;
+      const next = { ...prev };
+      delete next[fieldId];
+      return next;
+    });
+  }
 
   async function onSubmit(e: React.FormEvent) {
     e.preventDefault();
-    if (!ids || !data) return;
+    if (!ids || !data || submitting) return;
     setSubmitting(true);
     setToast(null);
+    setFormLevelMessages([]);
+
+    const clientMsgs = {
+      requiredSelect: t(locale, "errorSelectRequired"),
+      requiredText: t(locale, "errorTextRequired"),
+      requiredNumber: t(locale, "errorNumberRequired"),
+      invalidNumber: t(locale, "errorNumberInvalid")
+    };
+    const clientErrs = validateAnswersForSubmit(data.schema, answers, clientMsgs);
+    if (Object.keys(clientErrs).length) {
+      setFieldErrors(clientErrs);
+      setFormLevelMessages([t(locale, "validationSummaryTitle")]);
+      setSubmitting(false);
+      scrollToFirstFieldError(Object.keys(clientErrs));
+      return;
+    }
+
+    const payload = scrubAnswersForSubmit(data.schema, answers);
+
     try {
-      await submitForm(ids.inspectionId, ids.uuid, answers, outputSelectValue || undefined);
+      await submitForm(ids.inspectionId, ids.uuid, payload, effectiveOutputLang || undefined);
       setSubmitted(true);
-      setToast({ kind: "success", message: t(locale, "submittedToast") });
+      setFieldErrors({});
     } catch (e: unknown) {
-      const msg = e instanceof Error ? e.message : t(locale, "submitFailed");
-      setToast({ kind: "error", message: msg });
+      if (isApiHttpError(e) && e.status === 400) {
+        const mapped = mapServerValidationToFieldErrors(data.schema, e.detail, {
+          missingSelect: t(locale, "errorSelectRequired"),
+          missingText: t(locale, "errorTextRequired"),
+          missingNumber: t(locale, "errorNumberRequired"),
+          badNumber: t(locale, "errorNumberInvalid"),
+          badText: t(locale, "errorBackendText"),
+          badString: t(locale, "errorBackendString"),
+          badOption: t(locale, "errorBackendOption"),
+          unsupported: t(locale, "errorBackendUnsupported")
+        });
+        setFieldErrors(mapped.fieldErrors);
+        const msgs = [t(locale, "validationSummaryTitle"), ...mapped.general];
+        setFormLevelMessages(msgs);
+        const fe = Object.keys(mapped.fieldErrors);
+        if (fe.length) scrollToFirstFieldError(fe);
+        else {
+          window.setTimeout(() => document.getElementById("form-submit-summary")?.focus(), 0);
+        }
+      } else if (isApiHttpError(e) && e.status === 409) {
+        try {
+          const refreshed = await getForm(ids.inspectionId, ids.uuid, formLanguage);
+          setData(refreshed);
+          setSubmitted(false);
+          setFieldErrors({});
+          setFormLevelMessages([]);
+        } catch {
+          setFormLevelMessages([t(locale, "submitErrorTitle"), describeSubmitFailure(e, locale)]);
+          window.setTimeout(() => document.getElementById("form-submit-summary")?.focus(), 0);
+        }
+      } else {
+        setFormLevelMessages([t(locale, "submitErrorTitle"), describeSubmitFailure(e, locale)]);
+        window.setTimeout(() => document.getElementById("form-submit-summary")?.focus(), 0);
+      }
     } finally {
       setSubmitting(false);
     }
@@ -333,9 +493,13 @@ export function FormPage() {
     }
   }
 
+  const showLoadSpinner = loading && !data && !loadFailure;
+  const showBlockingError = Boolean(!loading && loadFailure && !data);
+
   return (
     <div className="container">
       {toast ? <Toast kind={toast.kind} message={toast.message} onClose={() => setToast(null)} locale={locale} /> : null}
+
       <header className="pageHeader pageHeaderStacked">
         <div className="pageHeaderMain">
           <div className="brandBlock brandBlockHero">
@@ -360,7 +524,27 @@ export function FormPage() {
         </div>
       </header>
 
-      {loading && !data ? <div className="card cardLoading">{t(locale, "loading")}</div> : null}
+      {showLoadSpinner ? (
+        <section className="card cardLoading" aria-labelledby="loading-heading">
+          <h2 id="loading-heading" className="visuallyHidden">
+            {t(locale, "loading")}
+          </h2>
+          <LoadingState label={t(locale, "loading")} />
+        </section>
+      ) : null}
+
+      {showBlockingError && loadFailure ? (
+        <section className="card" aria-live="assertive">
+          <Alert variant="danger" title={loadFailure.title} role="alert">
+            <p className="alertText">{loadFailure.body}</p>
+            <div className="stackRow">
+              <Button type="button" variant="primary" onClick={() => void loadForm()}>
+                {t(locale, "retryLoad")}
+              </Button>
+            </div>
+          </Alert>
+        </section>
+      ) : null}
 
       {completionKnown && data ? (
         <section className="card completionCard" aria-labelledby="completion-heading">
@@ -378,14 +562,12 @@ export function FormPage() {
           ) : null}
           {pdfAvailable ? (
             <div className="completionActions">
-              <button type="button" className="buttonPrimary" onClick={onDownloadPdf} disabled={pdfDownloading}>
+              <Button type="button" variant="primary" onClick={() => void onDownloadPdf()} disabled={pdfDownloading}>
                 {pdfDownloading ? t(locale, "downloadingPdf") : t(locale, "downloadPdf")}
-              </button>
+              </Button>
             </div>
           ) : completionKnown && orgPresent ? (
-            <p className="muted small completionNote" role="note">
-              {t(locale, "pdfNotAvailableNote")}
-            </p>
+            <p className="muted small completionNote">{t(locale, "pdfNotAvailableNote")}</p>
           ) : null}
         </section>
       ) : null}
@@ -394,11 +576,31 @@ export function FormPage() {
         <form
           onSubmit={onSubmit}
           className={`card formCard${loading && data ? " formCardRefreshing" : ""}`}
-          aria-busy={loading && !!data}
+          noValidate
+          aria-busy={submitting}
         >
           {loading && data ? (
-            <div className="formRefreshBanner" role="status">
+            <div className="formRefreshBanner" role="status" aria-live="polite">
               {t(locale, "updatingQuestionnaire")}
+            </div>
+          ) : null}
+
+          {formLevelMessages.length ? (
+            <div
+              className="formSummaryErrors"
+              role="alert"
+              aria-live="assertive"
+              id="form-submit-summary"
+              tabIndex={-1}
+            >
+              <div className="formSummaryTitle">{formLevelMessages[0]}</div>
+              {formLevelMessages.length > 1 ? (
+                <ul className="formSummaryList">
+                  {formLevelMessages.slice(1).map((m) => (
+                    <li key={m}>{m}</li>
+                  ))}
+                </ul>
+              ) : null}
             </div>
           ) : null}
 
@@ -416,13 +618,16 @@ export function FormPage() {
           {languageCodes.length > 0 ? (
             <div className="langRow">
               <div className="field fieldLang">
-                <label htmlFor="form_language">{t(locale, "formLanguage")}</label>
+                <label htmlFor="form_language" className="fieldLabel">
+                  {t(locale, "formLanguage")}
+                </label>
                 <select
                   id="form_language"
                   className="selectControl"
                   value={formLanguage}
                   onChange={(e) => setFormLanguage(e.target.value || (data.default_output_language ?? "en"))}
                   disabled={submitting}
+                  aria-describedby="form_language_hint"
                 >
                   {languageCodes.map((lang) => (
                     <option key={lang} value={lang}>
@@ -430,16 +635,21 @@ export function FormPage() {
                     </option>
                   ))}
                 </select>
-                <span className="fieldHint">{t(locale, "formLanguageHint")}</span>
+                <span id="form_language_hint" className="fieldHint">
+                  {t(locale, "formLanguageHint")}
+                </span>
               </div>
               <div className="field fieldLang">
-                <label htmlFor="output_language">{t(locale, "outputLanguage")}</label>
+                <label htmlFor="output_language" className="fieldLabel">
+                  {t(locale, "outputLanguage")}
+                </label>
                 <select
                   id="output_language"
                   className="selectControl"
-                  value={outputSelectValue}
+                  value={effectiveOutputLang}
                   onChange={(e) => setOutputLanguage(e.target.value || null)}
                   disabled={submitting}
+                  aria-describedby="output_language_hint"
                 >
                   {languageCodes.map((lang) => (
                     <option key={`out-${lang}`} value={lang}>
@@ -447,7 +657,9 @@ export function FormPage() {
                     </option>
                   ))}
                 </select>
-                <span className="fieldHint">{t(locale, "outputLanguageHint")}</span>
+                <span id="output_language_hint" className="fieldHint">
+                  {t(locale, "outputLanguageHint")}
+                </span>
               </div>
             </div>
           ) : null}
@@ -456,20 +668,27 @@ export function FormPage() {
             <div key={s.id} className="section">
               <h3 className="sectionTitle">{s.title}</h3>
               {s.fields.map((f) => (
-                <Field
-                  key={f.id}
-                  field={f}
-                  value={answers[f.id]}
-                  onChange={(next) => setAnswers((prev) => ({ ...prev, [f.id]: next }))}
-                />
+                <div key={f.id} className="fieldAnchor" data-field-anchor={f.id}>
+                  <SchemaField
+                    field={f}
+                    value={answers[f.id]}
+                    onChange={(next) => {
+                      setAnswers((prev) => ({ ...prev, [f.id]: next }));
+                      clearFieldError(f.id);
+                    }}
+                    error={fieldErrors[f.id]}
+                    disabled={submitting}
+                    locale={locale}
+                  />
+                </div>
               ))}
             </div>
           ))}
 
           <div className="actions">
-            <button type="submit" className="buttonPrimary" disabled={submitting}>
+            <Button type="submit" variant="primary" disabled={submitting || (loading && !!data)}>
               {submitting ? t(locale, "submitting") : t(locale, "submit")}
-            </button>
+            </Button>
           </div>
         </form>
       ) : null}

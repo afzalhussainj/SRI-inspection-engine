@@ -23,26 +23,70 @@ function extractHtmlTitle(html: string): string | null {
   return m?.[1]?.trim() ?? null;
 }
 
-async function http<T>(path: string, init?: RequestInit): Promise<T> {
-  const res = await fetch(`${apiBaseUrl()}${path}`, {
-    headers: {
-      "Content-Type": "application/json",
-      ...(init?.headers ?? {})
-    },
-    ...init
-  });
+export class ApiHttpError extends Error {
+  readonly status: number;
+  readonly detail: string;
+
+  constructor(status: number, detail: string) {
+    super(detail);
+    this.name = "ApiHttpError";
+    this.status = status;
+    this.detail = detail;
+  }
+}
+
+export function isApiHttpError(e: unknown): e is ApiHttpError {
+  return e instanceof ApiHttpError;
+}
+
+async function readErrorDetail(res: Response): Promise<string> {
+  const contentType = res.headers.get("content-type") ?? "";
+  if (contentType.includes("application/json")) {
+    const body: unknown = await res.json().catch(() => ({}));
+    if (body && typeof body === "object" && "detail" in body) {
+      const d = (body as { detail?: unknown }).detail;
+      if (typeof d === "string" && d.trim()) return d.trim();
+      if (Array.isArray(d) && d.length) {
+        const parts = d
+          .map((x) => {
+            if (typeof x === "string") return x;
+            if (x && typeof x === "object" && "string" in x && typeof (x as { string?: unknown }).string === "string") {
+              return (x as { string: string }).string;
+            }
+            return null;
+          })
+          .filter((x): x is string => Boolean(x));
+        if (parts.length) return parts.join("; ");
+      }
+    }
+    return res.statusText || "Request failed";
+  }
+
+  const text = await res.text().catch(() => "");
+  const title = extractHtmlTitle(text);
+  return title ?? res.statusText ?? "Request failed";
+}
+
+async function httpJson<T>(path: string, init?: RequestInit): Promise<T> {
+  let res: Response;
+  try {
+    res = await fetch(`${apiBaseUrl()}${path}`, {
+      headers: {
+        "Content-Type": "application/json",
+        ...(init?.headers ?? {})
+      },
+      ...init
+    });
+  } catch (e: unknown) {
+    if (e instanceof TypeError) {
+      throw new TypeError("NETWORK");
+    }
+    throw e;
+  }
 
   if (!res.ok) {
-    const contentType = res.headers.get("content-type") ?? "";
-    if (contentType.includes("application/json")) {
-      const body: any = await res.json().catch(() => ({}));
-      const detail = typeof body?.detail === "string" ? body.detail : res.statusText;
-      throw new Error(detail);
-    }
-
-    const text = await res.text().catch(() => "");
-    const title = extractHtmlTitle(text);
-    throw new Error(title ?? res.statusText);
+    const detail = await readErrorDetail(res);
+    throw new ApiHttpError(res.status, detail);
   }
   return (await res.json()) as T;
 }
@@ -53,7 +97,7 @@ export async function getForm(
   language?: string | null
 ): Promise<GetFormResponse> {
   const q = language ? `?lang=${encodeURIComponent(language)}` : "";
-  return await http<GetFormResponse>(
+  return await httpJson<GetFormResponse>(
     `/api/public/inspections/${encodeURIComponent(inspectionId)}/links/${encodeURIComponent(uuid)}/${q}`
   );
 }
@@ -64,7 +108,7 @@ export async function submitForm(
   answers: Record<string, unknown>,
   outputLanguage?: string
 ): Promise<SubmitResponse> {
-  return await http<SubmitResponse>(
+  return await httpJson<SubmitResponse>(
     `/api/public/inspections/${encodeURIComponent(inspectionId)}/links/${encodeURIComponent(uuid)}/submit/`,
     {
       method: "POST",
@@ -79,18 +123,18 @@ export function submissionPdfUrl(inspectionId: string, linkUuid: string): string
 
 /** Fetches the respondent PDF (same rules as GET …/pdf/ on the server). */
 export async function fetchSubmissionPdf(inspectionId: string, linkUuid: string): Promise<Blob> {
-  const res = await fetch(submissionPdfUrl(inspectionId, linkUuid), { method: "GET" });
-  if (!res.ok) {
-    const contentType = res.headers.get("content-type") ?? "";
-    if (contentType.includes("application/json")) {
-      const body: Record<string, unknown> = (await res.json().catch(() => ({}))) as Record<string, unknown>;
-      const detail = typeof body.detail === "string" ? body.detail : res.statusText;
-      throw new Error(detail);
+  let res: Response;
+  try {
+    res = await fetch(submissionPdfUrl(inspectionId, linkUuid), { method: "GET" });
+  } catch (e: unknown) {
+    if (e instanceof TypeError) {
+      throw new TypeError("NETWORK");
     }
-    const text = await res.text().catch(() => "");
-    throw new Error(text || res.statusText);
+    throw e;
+  }
+  if (!res.ok) {
+    const detail = await readErrorDetail(res);
+    throw new ApiHttpError(res.status, detail);
   }
   return await res.blob();
 }
-
-

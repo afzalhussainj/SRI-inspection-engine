@@ -3,18 +3,23 @@ import { cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import type { GetFormResponse } from "./types";
+import { ApiHttpError } from "./api";
 import { FormPage } from "./FormPage";
 
 const getForm = vi.fn();
 const submitForm = vi.fn();
 const fetchSubmissionPdf = vi.fn();
 
-vi.mock("./api", () => ({
-  getForm: (...args: unknown[]) => getForm(...args),
-  submitForm: (...args: unknown[]) => submitForm(...args),
-  fetchSubmissionPdf: (...args: unknown[]) => fetchSubmissionPdf(...args),
-  resolveMediaUrl: () => null
-}));
+vi.mock("./api", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("./api")>();
+  return {
+    ...actual,
+    getForm: (...args: unknown[]) => getForm(...args),
+    submitForm: (...args: unknown[]) => submitForm(...args),
+    fetchSubmissionPdf: (...args: unknown[]) => fetchSubmissionPdf(...args),
+    resolveMediaUrl: () => null
+  };
+});
 
 function minimalForm(overrides: Partial<GetFormResponse> = {}): GetFormResponse {
   return {
@@ -35,7 +40,10 @@ function minimalForm(overrides: Partial<GetFormResponse> = {}): GetFormResponse 
               type: "select",
               label: "Pick",
               required: true,
-              options: [{ value: "one", label: "One" }]
+              options: [
+                { value: "one", label: "One" },
+                { value: "two", label: "Two" }
+              ]
             }
           ]
         }
@@ -147,6 +155,8 @@ describe("FormPage", () => {
       expect(screen.getByRole("button", { name: /^submit$/i })).toBeInTheDocument();
     });
 
+    await user.selectOptions(await screen.findByLabelText(/pick/i), "one");
+
     await user.click(screen.getByRole("button", { name: /^submit$/i }));
 
     await waitFor(() => {
@@ -155,5 +165,90 @@ describe("FormPage", () => {
 
     expect(screen.queryByRole("button", { name: /already submitted/i })).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: /download pdf summary/i })).toBeEnabled();
+  });
+
+  it("required select starts on placeholder, not first real option", async () => {
+    getForm.mockResolvedValue(minimalForm());
+    renderAtPath("/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/55555555-5555-4555-8555-555555555555");
+
+    const sel = await screen.findByLabelText(/pick/i);
+    expect((sel as HTMLSelectElement).value).toBe("");
+  });
+
+  it("does not call submit when required select is left on placeholder", async () => {
+    getForm.mockResolvedValue(minimalForm());
+    const user = userEvent.setup();
+    renderAtPath("/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/66666666-6666-4666-8666-666666666666");
+
+    await screen.findByLabelText(/pick/i);
+    await user.click(screen.getByRole("button", { name: /^submit$/i }));
+
+    await waitFor(() => {
+      expect(screen.getByText(/please select an option/i)).toBeInTheDocument();
+    });
+    expect(submitForm).not.toHaveBeenCalled();
+  });
+
+  it("submits scrubbed answers without empty select value", async () => {
+    getForm.mockResolvedValue(minimalForm());
+    submitForm.mockResolvedValue({ status: "submitted" });
+    const user = userEvent.setup();
+    renderAtPath("/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/77777777-7777-4777-8777-777777777777");
+
+    await user.selectOptions(await screen.findByLabelText(/pick/i), "two");
+    await user.click(screen.getByRole("button", { name: /^submit$/i }));
+
+    await waitFor(() => {
+      expect(submitForm).toHaveBeenCalled();
+    });
+    const payload = submitForm.mock.calls[0][2] as Record<string, unknown>;
+    expect(payload).toEqual({ field_a: "two" });
+  });
+
+  it("maps backend 400 validation detail to a field message", async () => {
+    getForm.mockResolvedValue(minimalForm());
+    submitForm.mockRejectedValue(new ApiHttpError(400, "Missing required field: field_a"));
+    const user = userEvent.setup();
+    renderAtPath("/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/88888888-8888-4888-8888-888888888888");
+
+    await user.selectOptions(await screen.findByLabelText(/pick/i), "one");
+    await user.click(screen.getByRole("button", { name: /^submit$/i }));
+
+    await waitFor(() => {
+      expect(screen.getByText(/please select an option/i)).toBeInTheDocument();
+    });
+  });
+
+  it("shows friendly load failure and retry for network errors", async () => {
+    getForm.mockRejectedValue(new TypeError("NETWORK"));
+    renderAtPath("/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/99999999-9999-4999-8999-999999999999");
+
+    await waitFor(() => {
+      expect(screen.getByRole("alert")).toHaveTextContent(/connection problem/i);
+    });
+    expect(screen.getByRole("button", { name: /try again/i })).toBeInTheDocument();
+  });
+
+  it("prevents double submission while submit is in flight", async () => {
+    getForm.mockResolvedValue(minimalForm());
+    let resolveSubmit!: (v: unknown) => void;
+    submitForm.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          resolveSubmit = resolve;
+        })
+    );
+    const user = userEvent.setup();
+    renderAtPath("/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/aaaaaaaa-bbbb-4ccc-addd-eeeeeeeeeeee");
+
+    await user.selectOptions(await screen.findByLabelText(/pick/i), "one");
+    const btn = screen.getByRole("button", { name: /^submit$/i });
+    await user.click(btn);
+    await user.click(btn);
+    expect(submitForm).toHaveBeenCalledTimes(1);
+    resolveSubmit!({ status: "submitted" });
+    await waitFor(() => {
+      expect(screen.getByRole("heading", { name: /submission received/i })).toBeInTheDocument();
+    });
   });
 });
