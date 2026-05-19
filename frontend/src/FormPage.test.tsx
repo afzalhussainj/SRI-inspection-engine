@@ -101,7 +101,7 @@ describe("FormPage", () => {
 
     expect(screen.getByRole("button", { name: /download pdf summary/i })).toBeEnabled();
 
-    expect(screen.getByText(/reference details/i)).toBeInTheDocument();
+    expect(screen.getByText(/submission reference/i)).toBeInTheDocument();
   });
 
   it("does not show a PDF download button for org-linked campaigns (QuietRisk-style)", async () => {
